@@ -1,0 +1,26 @@
+
+# Fichiers de configuration sensibles
+.env
+.env.*
+!.env.example
+Backend/connexion.php
+
+# Sauvegardes et exports de bases de données
+*.sql
+*.sqlite
+*.db
+
+# Fichiers temporaires
+*.log
+*.tmp
+*.bak
+
+# Dépendances
+node_modules/
+vendor/
+
+# Système et éditeurs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
