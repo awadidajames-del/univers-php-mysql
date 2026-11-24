@@ -1,0 +1,6 @@
+<div class="stats-grid">
+	<article class="stat-card"><div class="stat-icon brown"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h18v18H3z"/><path d="M7 16V9"/><path d="M12 16V6"/><path d="M17 16v-4"/></svg></div><div class="stat-copy"><span>Ventes du jour</span><strong>248 500 <small>FCFA</small></strong><em class="positive">↗ 12,4%</em></div></article>
+	<article class="stat-card"><div class="stat-icon rose"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div><div class="stat-copy"><span>À traiter</span><strong>8 <small>tâches</small></strong><em>2 urgentes</em></div></article>
+	<article class="stat-card"><div class="stat-icon beige"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg></div><div class="stat-copy"><span>Valeur du stock</span><strong>12,8 <small>M FCFA</small></strong><em>1 284 variantes</em></div></article>
+	<article class="stat-card"><div class="stat-icon cream"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg></div><div class="stat-copy"><span>Alertes stock</span><strong>23 <small>produits</small></strong><em class="warning">6 en rupture</em></div></article>
+</div>

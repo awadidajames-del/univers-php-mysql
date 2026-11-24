@@ -4,7 +4,6 @@ const starterClients = [
     id: "client-fatou",
     name: "Fatou Diallo",
     phone: "+221 77 245 18 30",
-    email: "fatou.diallo@email.com",
     orders: [
       { id: "VT-2841", date: "2026-11-23", items: [{ name: "Glossier Lip Oil", quantity: 2, price: 1500 }, { name: "Nivea Soft Crème", quantity: 1, price: 900 }] },
       { id: "VT-2816", date: "2026-11-20", items: [{ name: "Maybelline Mascara", quantity: 1, price: 1500 }, { name: "Bodycology Mist", quantity: 2, price: 1400 }] }
@@ -14,15 +13,13 @@ const starterClients = [
     id: "client-awa",
     name: "Awa Ndiaye",
     phone: "+221 76 510 42 08",
-    email: "awa.ndiaye@email.com",
     orders: [{ id: "VT-2830", date: "2026-11-22", items: [{ name: "Nivea Soft Crème", quantity: 3, price: 900 }] }]
   },
-  { id: "client-mariama", name: "Mariama Ba", phone: "+221 78 632 17 45", email: "mariama.ba@email.com", orders: [] },
+  { id: "client-mariama", name: "Mariama Ba", phone: "+221 78 632 17 45", orders: [] },
   {
     id: "client-khadija",
     name: "Khadija Sow",
     phone: "+221 70 842 09 11",
-    email: "khadija.sow@email.com",
     orders: [{ id: "VT-2792", date: "2026-11-18", items: [{ name: "Glossier Lip Oil", quantity: 1, price: 1500 }, { name: "Bodycology Mist", quantity: 1, price: 1400 }] }]
   }
 ];
@@ -43,7 +40,16 @@ let toastTimer;
 function loadClients() {
   try {
     const savedClients = JSON.parse(localStorage.getItem(storageKey));
-    return Array.isArray(savedClients) ? savedClients : starterClients;
+    if (!Array.isArray(savedClients)) return starterClients;
+    let removedLegacyEmails = false;
+    const clientsWithoutEmails = savedClients.map(client => {
+      if (!client || typeof client !== "object" || !Object.prototype.hasOwnProperty.call(client, "email")) return client;
+      const { email, ...clientWithoutEmail } = client;
+      removedLegacyEmails = true;
+      return clientWithoutEmail;
+    });
+    if (removedLegacyEmails) localStorage.setItem(storageKey, JSON.stringify(clientsWithoutEmails));
+    return clientsWithoutEmails;
   } catch {
     return starterClients;
   }
@@ -93,7 +99,7 @@ function getVisibleClients() {
     if (activeFilter === "buyers" && !client.orders?.length) return false;
     if (!query) return true;
     const orderProducts = (client.orders ?? []).flatMap(order => order.items ?? []).map(item => item.name).join(" ");
-    return `${client.name} ${client.phone} ${client.email} ${orderProducts}`.toLocaleLowerCase("fr").includes(query);
+    return `${client.name} ${client.phone} ${orderProducts}`.toLocaleLowerCase("fr").includes(query);
   }).sort((first, second) => first.name.localeCompare(second.name, "fr"));
 }
 
@@ -103,7 +109,7 @@ function renderClients() {
     const orders = client.orders ?? [];
     const latestOrder = [...orders].sort((first, second) => second.date.localeCompare(first.date))[0];
     return `<tr class="client-row${client.id === selectedClientId ? " selected" : ""}" data-client-id="${escapeHtml(client.id)}" tabindex="0" aria-selected="${client.id === selectedClientId}">
-      <td><span class="client-name-cell"><span class="client-avatar">${escapeHtml(getInitials(client.name))}</span><span><strong>${escapeHtml(client.name)}</strong><small>${escapeHtml(client.email || "E-mail non renseigné")}</small></span></span></td>
+      <td><span class="client-name-cell"><span class="client-avatar">${escapeHtml(getInitials(client.name))}</span><strong>${escapeHtml(client.name)}</strong></span></td>
       <td>${escapeHtml(client.phone || "—")}</td><td><span class="order-count${orders.length ? " has-orders" : ""}">${orders.length}</span></td>
       <td class="spent-cell">${formatPrice(getOrdersTotal(client))}</td><td>${formatDate(latestOrder?.date)}</td>
     </tr>`;
@@ -130,7 +136,7 @@ function renderDetails() {
   }).join("") : `<div class="no-orders"><span class="no-orders-icon">—</span><strong>Aucune commande enregistrée</strong><p>Les achats de ce client s’afficheront ici.</p></div>`;
 
   clientDetails.innerHTML = `<div class="detail-heading"><div class="detail-identity"><span class="detail-avatar">${escapeHtml(getInitials(client.name))}</span><div><p class="panel-kicker">FICHE CLIENT</p><h2>${escapeHtml(client.name)}</h2></div></div><div class="detail-actions"><button class="icon-action" type="button" data-action="edit" aria-label="Modifier ce client" title="Modifier">✎</button><button class="icon-action danger-action" type="button" data-action="delete" aria-label="Supprimer ce client" title="Supprimer">×</button></div></div>
-    <div class="client-contact"><span>${escapeHtml(client.phone || "Téléphone non renseigné")}</span><span>${escapeHtml(client.email || "E-mail non renseigné")}</span></div>
+    <div class="client-contact"><span>${escapeHtml(client.phone || "Téléphone non renseigné")}</span></div>
     <div class="detail-totals"><div><span>Commandes</span><strong>${orders.length}</strong></div><div><span>Total dépensé</span><strong>${formatPrice(getOrdersTotal(client))}</strong></div></div>
     <div class="orders-heading"><div><p class="panel-kicker">ACHATS</p><h3>Historique des commandes</h3></div><span>${orders.length} commande${orders.length === 1 ? "" : "s"}</span></div>
     <div class="orders-list">${orderMarkup}</div>`;
@@ -146,7 +152,6 @@ function openClientModal(client = null) {
   clientForm.reset();
   clientForm.elements.name.value = client?.name ?? "";
   clientForm.elements.phone.value = client?.phone ?? "";
-  clientForm.elements.email.value = client?.email ?? "";
   document.getElementById("clientModalTitle").textContent = client ? "Modifier le client" : "Nouveau client";
   clientModal.hidden = false;
   clientForm.elements.name.focus();
@@ -176,8 +181,7 @@ clientForm.addEventListener("submit", event => {
   const formData = new FormData(clientForm);
   const values = {
     name: String(formData.get("name")).trim(),
-    phone: String(formData.get("phone")).trim(),
-    email: String(formData.get("email")).trim()
+    phone: String(formData.get("phone")).trim()
   };
   const wasEditing = Boolean(editingClientId);
   if (wasEditing) {

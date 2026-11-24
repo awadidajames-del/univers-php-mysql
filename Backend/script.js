@@ -23,29 +23,17 @@ const titles = {
 
 menuButton.addEventListener("click", () => sidebar.classList.toggle("open"));
 
-document.querySelectorAll(".nav-item[data-view]").forEach(button => {
-  button.addEventListener("click", () => {
-    document.querySelectorAll(".nav-item").forEach(item => item.classList.remove("active"));
-    button.classList.add("active");
-    const view = button.dataset.view;
-    sidebar.classList.remove("open");
-    if (view === "dashboard") {
-      dashboardView.hidden = false;
-      genericView.hidden = true;
-    } else {
-      const [title, text] = titles[view];
-      placeholderTitle.textContent = title;
-      placeholderText.textContent = text;
-      placeholderIcon.textContent = title.charAt(0);
-      dashboardView.hidden = true;
-      genericView.hidden = false;
-    }
-  });
-});
-
-document.getElementById("backButton").addEventListener("click", () => {
-  document.querySelector('[data-view="dashboard"]').click();
-});
+const requestedView = new URLSearchParams(window.location.search).get("view");
+if (titles[requestedView]) {
+  const [title, text] = titles[requestedView];
+  placeholderTitle.textContent = title;
+  placeholderText.textContent = text;
+  placeholderIcon.textContent = title.charAt(0);
+  dashboardView.hidden = true;
+  genericView.hidden = false;
+  document.querySelectorAll(".sidebar .nav-item").forEach(item => item.classList.remove("active"));
+  document.querySelector(`[data-page="${requestedView}"]`)?.classList.add("active");
+}
 
 const saleModal = document.getElementById("saleModal");
 const saleProducts = document.getElementById("saleProducts");

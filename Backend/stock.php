@@ -1,106 +1,286 @@
 <?php
 declare(strict_types=1);
+
+session_start();
+require __DIR__ . '/connexion.php';
+
+$pageTitle = 'Catalogue produits — Univer Cosmetics';
+$currentPage = 'stock';
+
+$message = '';
+$error = '';
+
+if (empty($_SESSION['stock_csrf'])) {
+    $_SESSION['stock_csrf'] = bin2hex(random_bytes(32));
+}
+$csrfToken = $_SESSION['stock_csrf'];
+
+try {
+    $pdo = getDatabaseConnection();
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        if (!hash_equals($csrfToken, (string) ($_POST['csrf_token'] ?? ''))) {
+            throw new RuntimeException('Session expirée. Rechargez la page puis réessayez.');
+        }
+
+        $action = (string) ($_POST['action'] ?? '');
+
+        if ($action === 'save_product') {
+            $id = filter_input(INPUT_POST, 'id_produits', FILTER_VALIDATE_INT);
+            $name = trim((string) ($_POST['nom_produit'] ?? ''));
+            $category = filter_input(INPUT_POST, 'id_categorie', FILTER_VALIDATE_INT);
+            $brandName = trim((string) ($_POST['marque'] ?? ''));
+            $client = filter_input(INPUT_POST, 'codcli', FILTER_VALIDATE_INT);
+            $price = filter_input(INPUT_POST, 'prix_vente', FILTER_VALIDATE_INT);
+            $threshold = filter_input(INPUT_POST, 'seuil_stock', FILTER_VALIDATE_INT);
+            $quantity = filter_input(INPUT_POST, 'quantite', FILTER_VALIDATE_INT);
+
+            if ($name === '') {
+                throw new RuntimeException('Le nom du produit est obligatoire.');
+            }
+            if ($price === false || $price < 0 || $threshold === false || $threshold < 0 || $quantity === false || $quantity < 0) {
+                throw new RuntimeException('Le prix, le seuil et la quantité doivent être des nombres positifs.');
+            }
+
+            $category = $category ?: null;
+            $brand = null;
+            if ($brandName !== '') {
+                $statement = $pdo->prepare('SELECT id_marque FROM marques WHERE nom = :name LIMIT 1');
+                $statement->execute(['name' => $brandName]);
+                $brand = $statement->fetchColumn();
+
+                if ($brand === false) {
+                    $statement = $pdo->prepare('INSERT INTO marques (nom, actif) VALUES (:name, 1)');
+                    $statement->execute(['name' => $brandName]);
+                    $brand = $pdo->lastInsertId();
+                }
+            }
+            $client = $client ?: null;
+
+            if ($id) {
+                $sql = 'UPDATE produits
+                        SET id_categorie = :category, codcli = :client, id_marque = :brand,
+                            nom_produit = :name,
+                            prix_vente = :price, seuil_stock = :threshold, quantite = :quantity
+                        WHERE id_produits = :id';
+                $statement = $pdo->prepare($sql);
+                $statement->execute([
+                    'category' => $category, 'client' => $client, 'brand' => $brand,
+                    'name' => $name,
+                    'price' => $price,
+                    'threshold' => $threshold, 'quantity' => $quantity, 'id' => $id,
+                ]);
+                $message = 'Produit modifié avec succès.';
+            } else {
+                $sql = 'INSERT INTO produits
+                        (id_categorie, codcli, id_marque, nom_produit, prix_vente, seuil_stock, quantite)
+                        VALUES (:category, :client, :brand, :name, :price, :threshold, :quantity)';
+                $statement = $pdo->prepare($sql);
+                $statement->execute([
+                    'category' => $category, 'client' => $client, 'brand' => $brand,
+                    'name' => $name,
+                    'price' => $price,
+                    'threshold' => $threshold, 'quantity' => $quantity,
+                ]);
+                $message = 'Produit enregistré dans le stock.';
+            }
+
+            header('Location: stock.php?status=saved');
+            exit;
+        }
+
+        if ($action === 'delete_product') {
+            $id = filter_input(INPUT_POST, 'id_produits', FILTER_VALIDATE_INT);
+            if (!$id) {
+                throw new RuntimeException('Produit introuvable.');
+            }
+            $statement = $pdo->prepare('DELETE FROM produits WHERE id_produits = :id');
+            $statement->execute(['id' => $id]);
+            header('Location: stock.php?status=deleted');
+            exit;
+        }
+
+        if ($action === 'move_stock') {
+            $id = filter_input(INPUT_POST, 'id_produits', FILTER_VALIDATE_INT);
+            $movementType = (string) ($_POST['type_mouvement'] ?? '');
+            $movementQuantity = filter_input(INPUT_POST, 'quantite_mouvement', FILTER_VALIDATE_INT);
+
+            if (!$id || $movementQuantity === false || $movementQuantity < 0) {
+                throw new RuntimeException('Le produit et la quantité sont obligatoires.');
+            }
+
+            $pdo->beginTransaction();
+            $statement = $pdo->prepare('SELECT quantite FROM produits WHERE id_produits = :id FOR UPDATE');
+            $statement->execute(['id' => $id]);
+            $current = $statement->fetchColumn();
+
+            if ($current === false) {
+                $pdo->rollBack();
+                throw new RuntimeException('Produit introuvable.');
+            }
+
+            $currentQuantity = (int) $current;
+            if ($movementType === 'entree') {
+                $newQuantity = $currentQuantity + $movementQuantity;
+            } elseif ($movementType === 'sortie') {
+                if ($movementQuantity <= 0) {
+                    $pdo->rollBack();
+                    throw new RuntimeException('La quantité sortie doit être supérieure à zéro.');
+                }
+                if ($movementQuantity > $currentQuantity) {
+                    $pdo->rollBack();
+                    throw new RuntimeException('Stock insuffisant pour cette sortie.');
+                }
+                $newQuantity = $currentQuantity - $movementQuantity;
+            } elseif ($movementType === 'ajustement') {
+                $newQuantity = $movementQuantity;
+            } else {
+                $pdo->rollBack();
+                throw new RuntimeException('Type de mouvement invalide.');
+            }
+
+            $statement = $pdo->prepare('UPDATE produits SET quantite = :quantity WHERE id_produits = :id');
+            $statement->execute(['quantity' => $newQuantity, 'id' => $id]);
+            $pdo->commit();
+
+            header('Location: stock.php?status=movement&check=' . $newQuantity);
+            exit;
+        }
+    }
+
+    $categories = $pdo->query('SELECT id_categorie, nom FROM categories WHERE actif = 1 ORDER BY nom')->fetchAll();
+    $brands = $pdo->query('SELECT id_marque, nom FROM marques WHERE actif = 1 ORDER BY nom')->fetchAll();
+    $clients = $pdo->query('SELECT codcli, nom, prenom FROM clients ORDER BY nom, prenom')->fetchAll();
+    $products = $pdo->query('SELECT p.*, c.nom AS categorie, m.nom AS marque,
+                                    cl.nom AS client_nom, cl.prenom AS client_prenom
+                             FROM produits p
+                             LEFT JOIN categories c ON c.id_categorie = p.id_categorie
+                             LEFT JOIN marques m ON m.id_marque = p.id_marque
+                             LEFT JOIN clients cl ON cl.codcli = p.codcli
+                             ORDER BY p.nom_produit, p.id_produits')->fetchAll();
+
+    $editProduct = null;
+    $editId = filter_input(INPUT_GET, 'edit', FILTER_VALIDATE_INT);
+    if ($editId) {
+        $statement = $pdo->prepare('SELECT * FROM produits WHERE id_produits = :id');
+        $statement->execute(['id' => $editId]);
+        $editProduct = $statement->fetch() ?: null;
+    }
+
+    $status = (string) ($_GET['status'] ?? '');
+    if ($status === 'saved') {
+        $message = 'Produit enregistré avec succès.';
+    } elseif ($status === 'deleted') {
+        $message = 'Produit supprimé.';
+    } elseif ($status === 'movement') {
+        $message = 'Le stock a été mis à jour.';
+    }
+
+    $totalQuantity = 0;
+    $stockValue = 0;
+    $lowStockCount = 0;
+    foreach ($products as $product) {
+        $quantity = (int) $product['quantite'];
+        $totalQuantity += $quantity;
+        $stockValue += $quantity * (int) $product['prix_vente'];
+        if ($quantity <= (int) $product['seuil_stock']) {
+            $lowStockCount++;
+        }
+    }
+} catch (Throwable $exception) {
+    $error = $exception instanceof PDOException
+        ? 'Impossible d’enregistrer les données dans la base univers. Vérifiez la connexion et les champs du SQL.'
+        : $exception->getMessage();
+    $categories = $categories ?? [];
+    $brands = $brands ?? [];
+    $clients = $clients ?? [];
+    $products = $products ?? [];
+    $editProduct = null;
+    $totalQuantity = 0;
+    $stockValue = 0;
+    $lowStockCount = 0;
+}
+
+$formatPrice = static fn(int $value): string => number_format($value, 0, ',', ' ') . ' FCFA';
+
+require __DIR__ . '/partials/head.php';
+require __DIR__ . '/partials/sidebar.php';
 ?>
-<!doctype html>
-<html lang="fr">
-<head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<meta name="theme-color" content="#302a28">
-	<title>Stock — Univer Cosmetics</title>
-	<link rel="preconnect" href="https://fonts.googleapis.com">
-	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-	<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
-	<link rel="stylesheet" href="styles.css">
-</head>
-<body>
-	<aside class="sidebar" id="sidebar">
-		<a class="brand" href="indet.php" aria-label="Univer Cosmetics, tableau de bord">
-			<span class="brand-mark">U</span>
-			<span><span class="brand-name">UNIVER</span><span class="brand-sub">COSMETICS</span></span>
-		</a>
-		<nav class="nav" aria-label="Navigation principale">
-			<a class="nav-item" href="indet.php"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg><span>Tableau de bord</span></a>
-			<a class="nav-item" href="indet.php"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h2l2.4 11.2a2 2 0 0 0 2 1.6h7.8a2 2 0 0 0 2-1.6L21 7H6"/><circle cx="10" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg><span>Ventes</span></a>
-			<a class="nav-item active" href="stock.php" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg><span>Stock</span></a>
-			<a class="nav-item" href="clients.php"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Clients</span></a>
-			<a class="nav-item" href="indet.php"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg><span>Rapports</span></a>
-		</nav>
-		<div class="sidebar-bottom">
-			<a class="nav-item" href="indet.php"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-1.42 1.42-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.04 1.56V20h-2v-.48A1.7 1.7 0 0 0 12.34 18a1.7 1.7 0 0 0-1.88.34l-.06.06-1.42-1.42.06-.06A1.7 1.7 0 0 0 9.38 15a1.7 1.7 0 0 0-1.56-1.04H7.4v-2h.42A1.7 1.7 0 0 0 9.38 10.9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 1.42-1.42.06.06A1.7 1.7 0 0 0 12.34 7a1.7 1.7 0 0 0 1.04-1.56V5h2v.44A1.7 1.7 0 0 0 16.44 7a1.7 1.7 0 0 0 1.88-.34l.06-.06 1.42 1.42-.06.06A1.7 1.7 0 0 0 19.4 10a1.7 1.7 0 0 0 1.56 1.04H21v2h-.04A1.7 1.7 0 0 0 19.4 15z"/></svg><span>Paramètres</span></a>
-			<div class="profile"><div class="avatar">MP</div><div class="profile-text"><strong>Mme. Princesse</strong><span>Administratrice</span></div><button class="icon-button" type="button" aria-label="Menu utilisateur">•••</button></div>
-		</div>
-	</aside>
 
-	<main class="main">
-		<header class="topbar">
-			<button class="menu-button" id="menuButton" type="button" aria-label="Ouvrir le menu"><span></span><span></span><span></span></button>
-			<label class="search clients-top-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input id="stockSearch" type="search" placeholder="Rechercher un produit..." aria-label="Rechercher un produit"></label>
-			<div class="topbar-actions"><span class="sync-status"><span class="status-dot"></span><span>Données locales</span></span></div>
-		</header>
+<main class="main">
+    <header class="topbar">
+        <button class="menu-button" id="menuButton" type="button" aria-label="Ouvrir le menu"><span></span><span></span><span></span></button>
+        <label class="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+            <input id="catalogSearch" type="search" placeholder="Rechercher un produit..." aria-label="Rechercher un produit">
+            <kbd>Ctrl K</kbd>
+        </label>
+        <div class="topbar-actions"><span class="sync-status"><span class="status-dot"></span><span>Données univers</span></span></div>
+    </header>
 
-		<section class="content inventory-content">
-			<div class="page-heading">
-				<div><p class="eyebrow">INVENTAIRE</p><h1>Gestion du stock</h1></div>
-				<button class="primary-button" id="newProductButton" type="button"><span>+</span> Nouveau produit</button>
-			</div>
+    <section class="content catalog-content">
+        <div class="page-heading">
+            <div><h1>Catalogue produits</h1></div>
+            <div class="catalog-heading-actions">
+                <a class="secondary-button" href="ajouterstock.php">Nouveau Stock</a>
+            </div>
+        </div>
 
-			<div class="stats-grid inventory-stats" aria-label="Aperçu de l’inventaire">
-				<article class="stat-card"><div class="stat-icon brown"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg></div><div class="stat-copy"><span>Références</span><strong id="productCount">0</strong><em>Produits suivis</em></div></article>
-				<article class="stat-card"><div class="stat-icon beige"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="8" cy="7" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="10" cy="17" r="2"/></svg></div><div class="stat-copy"><span>Unités en stock</span><strong id="unitCount">0</strong><em>Toutes références</em></div></article>
-				<article class="stat-card"><div class="stat-icon rose"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.8 20h18.4L12 3z"/><path d="M12 9v5M12 17h.01"/></svg></div><div class="stat-copy"><span>À réapprovisionner</span><strong id="lowStockCount">0</strong><em>Au seuil ou en dessous</em></div></article>
-				<article class="stat-card"><div class="stat-icon cream"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><div class="stat-copy"><span>Valeur au prix de vente</span><strong id="stockValue">0 <small>FCFA</small></strong><em>Estimation de l’inventaire</em></div></article>
-			</div>
+        <?php if ($message !== ''): ?>
+            <div class="catalog-message success" role="status"><?= htmlspecialchars($message, ENT_QUOTES, 'UTF-8') ?></div>
+        <?php endif; ?>
+        <?php if ($error !== ''): ?>
+            <div class="catalog-message error" role="alert"><?= htmlspecialchars($error, ENT_QUOTES, 'UTF-8') ?></div>
+        <?php endif; ?>
 
-			<div class="inventory-layout">
-				<section class="panel inventory-list-panel" aria-labelledby="inventoryTitle">
-					<div class="panel-header inventory-panel-header">
-						<div><p class="panel-kicker">PRODUITS</p><h2 id="inventoryTitle">Inventaire</h2></div>
-						<div class="inventory-controls">
-							<div class="inventory-filters" role="group" aria-label="Filtrer les produits"><button class="inventory-filter active" data-filter="all" type="button" aria-pressed="true">Tous</button><button class="inventory-filter" data-filter="low" type="button" aria-pressed="false">Stock bas</button><button class="inventory-filter" data-filter="out" type="button" aria-pressed="false">Rupture</button></div>
-							<select id="categoryFilter" aria-label="Filtrer par catégorie"><option value="all">Toutes catégories</option></select>
-						</div>
-					</div>
-					<div class="inventory-table-wrap">
-						<table class="inventory-table">
-							<thead><tr><th>Produit</th><th>Catégorie</th><th>Prix de vente</th><th>Quantité</th><th>Seuil</th><th>État</th></tr></thead>
-							<tbody id="productRows"></tbody>
-						</table>
-						<div class="empty-state" id="emptyProducts" hidden><span class="empty-mark">U</span><strong>Aucun produit trouvé</strong><p>Modifiez les filtres ou ajoutez un produit.</p></div>
-					</div>
-				</section>
+        <div class="stats-grid catalog-stats" aria-label="Aperçu du stock">
+            <article class="stat-card"><div class="stat-icon brown"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/></svg></div><div class="stat-copy"><span>Références</span><strong><?= count($products) ?></strong><em>Produits enregistrés</em></div></article>
+            <article class="stat-card"><div class="stat-icon rose"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg></div><div class="stat-copy"><span>Unités disponibles</span><strong><?= number_format($totalQuantity, 0, ',', ' ') ?></strong><em>Stock total</em></div></article>
+            <article class="stat-card"><div class="stat-icon beige"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><div class="stat-copy"><span>Valeur du stock</span><strong><?= $formatPrice($stockValue) ?></strong><em>Prix de vente</em></div></article>
+            <article class="stat-card"><div class="stat-icon cream"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.7L2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0z"/></svg></div><div class="stat-copy"><span>Stock faible</span><strong><?= $lowStockCount ?></strong><em>À réapprovisionner</em></div></article>
+        </div>
 
-				<aside class="panel inventory-detail-panel" id="productDetails" aria-live="polite" aria-label="Détail du produit"></aside>
-			</div>
-		</section>
-	</main>
+        <div class="catalog-layout">
+            <section class="panel catalog-list-panel" aria-labelledby="catalogListTitle">
+                <div class="panel-header catalog-panel-header">
+                    <div><h2 id="catalogListTitle">Tous les produits</h2></div>
+                    <span class="catalog-result-count" id="catalogCount"><?= count($products) ?> produit(s)</span>
+                </div>
+                <div class="catalog-filters">
+                    <select id="categoryFilter" aria-label="Filtrer par catégorie"><option value="">Toutes les catégories</option><?php foreach ($categories as $category): ?><option value="<?= (int) $category['id_categorie'] ?>"><?= htmlspecialchars($category['nom'], ENT_QUOTES, 'UTF-8') ?></option><?php endforeach; ?></select>
+                    <select id="brandFilter" aria-label="Filtrer par marque"><option value="">Toutes les marques</option><?php foreach ($brands as $brand): ?><option value="<?= (int) $brand['id_marque'] ?>"><?= htmlspecialchars($brand['nom'], ENT_QUOTES, 'UTF-8') ?></option><?php endforeach; ?></select>
+                </div>
+                <div class="catalog-table-wrap">
+                    <table class="catalog-table">
+                        <thead><tr><th>Produit</th><th>Catégorie</th><th>Marque</th><th>Prix</th><th>Quantité</th><th>État</th><th>Actions</th></tr></thead>
+                        <tbody id="catalogRows">
+                        <?php foreach ($products as $product):
+                            $quantity = (int) $product['quantite'];
+                            $threshold = (int) $product['seuil_stock'];
+                            $stockClass = $quantity === 0 ? 'empty' : ($quantity <= $threshold ? 'low' : '');
+                            $stockLabel = $quantity === 0 ? 'Épuisé' : ($quantity <= $threshold ? 'Stock faible' : 'Disponible');
+                            $search = strtolower(trim(($product['nom_produit'] ?? '') . ' ' . ($product['categorie'] ?? '') . ' ' . ($product['marque'] ?? '')));
+                        ?>
+                            <tr data-search="<?= htmlspecialchars($search, ENT_QUOTES, 'UTF-8') ?>" data-category="<?= (int) ($product['id_categorie'] ?? 0) ?>" data-brand="<?= (int) ($product['id_marque'] ?? 0) ?>">
+                                <td><strong><?= htmlspecialchars($product['nom_produit'], ENT_QUOTES, 'UTF-8') ?></strong></td>
+                                <td><?= htmlspecialchars((string) ($product['categorie'] ?? '—'), ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><?= htmlspecialchars((string) ($product['marque'] ?? '—'), ENT_QUOTES, 'UTF-8') ?></td>
+                                <td><?= $formatPrice((int) $product['prix_vente']) ?></td>
+                                <td><span class="stock-quantity <?= $stockClass ?>"><?= $quantity ?></span></td>
+                                <td><span class="stock-badge <?= $stockClass === '' ? 'good' : ($quantity === 0 ? 'out' : 'low') ?>"><?= $stockLabel ?></span></td>
+                                <td><div class="catalog-actions"><a class="icon-button stock-action" href="stock.php?edit=<?= (int) $product['id_produits'] ?>" aria-label="Modifier <?= htmlspecialchars($product['nom_produit'], ENT_QUOTES, 'UTF-8') ?>">✎</a><form method="post" data-confirm="Supprimer ce produit ?"><input type="hidden" name="csrf_token" value="<?= $csrfToken ?>"><input type="hidden" name="action" value="delete_product"><input type="hidden" name="id_produits" value="<?= (int) $product['id_produits'] ?>"><button class="icon-button stock-action" type="submit" aria-label="Supprimer">×</button></form></div></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                    <div class="empty-state" id="emptyCatalog" hidden><span class="empty-mark">U</span><strong>Aucun produit trouvé</strong><p>Modifiez les filtres ou ajoutez un produit.</p></div>
+                </div>
+            </section>
 
-	<div class="modal-backdrop" id="productModal" hidden>
-		<section class="modal inventory-modal" role="dialog" aria-modal="true" aria-labelledby="productModalTitle">
-			<header class="modal-header"><div><p class="panel-kicker">CATALOGUE</p><h2 id="productModalTitle">Nouveau produit</h2></div><button class="icon-button" id="closeProductModal" type="button" aria-label="Fermer">×</button></header>
-			<form id="productForm">
-				<div class="inventory-form-fields">
-					<label>Nom du produit<input name="name" required maxlength="100" placeholder="Ex. Sérum hydratant"></label>
-					<div class="form-two-columns"><label>Catégorie<select name="category" required><option value="Beauté">Beauté</option><option value="Corps">Corps</option><option value="Maquillage">Maquillage</option><option value="Parfum">Parfum</option><option value="Autre">Autre</option></select></label><label>Variante / format<input name="detail" maxlength="80" placeholder="Ex. 30 ml"></label></div>
-					<div class="form-two-columns"><label>Prix de vente (FCFA)<input name="price" type="number" min="0" step="1" required></label><label>Seuil d’alerte<input name="threshold" type="number" min="0" step="1" required></label></div>
-					<label id="initialStockField">Stock initial<input name="stock" type="number" min="0" step="1" value="0" required><small>Les réapprovisionnements suivants se font par mouvement de stock.</small></label>
-				</div>
-				<footer class="inventory-form-footer"><button class="secondary-button" id="cancelProductModal" type="button">Annuler</button><button class="primary-button" type="submit">Enregistrer</button></footer>
-			</form>
-		</section>
-	</div>
-
-	<div class="modal-backdrop" id="movementModal" hidden>
-		<section class="modal inventory-modal" role="dialog" aria-modal="true" aria-labelledby="movementModalTitle">
-			<header class="modal-header"><div><p class="panel-kicker">INVENTAIRE</p><h2 id="movementModalTitle">Mouvement de stock</h2></div><button class="icon-button" id="closeMovementModal" type="button" aria-label="Fermer">×</button></header>
-			<form id="movementForm">
-				<div class="inventory-form-fields"><p class="movement-product" id="movementProductName"></p><label>Type de mouvement<select name="type"><option value="entry">Entrée</option><option value="exit">Sortie</option><option value="adjustment">Ajustement du stock réel</option></select></label><label id="movementQuantityLabel">Quantité<input name="quantity" type="number" min="1" step="1" required></label><label>Motif (facultatif)<input name="note" maxlength="120" placeholder="Ex. Réapprovisionnement fournisseur"></label><p class="form-error" id="movementError" role="alert" hidden></p></div>
-				<footer class="inventory-form-footer"><button class="secondary-button" id="cancelMovementModal" type="button">Annuler</button><button class="primary-button" type="submit">Enregistrer le mouvement</button></footer>
-			</form>
-		</section>
-	</div>
-
-	<div class="toast" id="inventoryToast" role="status" aria-live="polite"></div>
-	<script src="stock.js" defer></script>
+           
+        </div>
+    </section>
+</main>
+<script src="stock-catalog.js?v=3" defer></script>
 </body>
 </html>
